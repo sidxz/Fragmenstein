@@ -90,7 +90,9 @@ def system_info():
     try:
         import pyrosetta  # noqa: F401
 
-        has_pyrosetta = True
+        from fragmenstein.igor.pyrosetta_import import AttributeFilledMock
+
+        has_pyrosetta = not isinstance(pyrosetta, AttributeFilledMock)
     except Exception:
         pass
     return {

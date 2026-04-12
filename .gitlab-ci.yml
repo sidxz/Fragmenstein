@@ -1,0 +1,52 @@
+# GitLab CI for Fragmenstein — builds backend & frontend images
+#
+# Copy this file as .gitlab-ci.yml into your GitLab fork of Fragmenstein:
+#   gitlab.snet.biobio.tamu.edu/sid/fragmenstein
+#
+# The pipeline builds linux/amd64 images and pushes to the GitLab registry.
+# Triggered on pushes to main branch or manual runs.
+
+stages:
+  - build
+
+variables:
+  REGISTRY: gitlab-registry.snet.biobio.tamu.edu/sid/fragmenstein
+
+build-backend:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - docker build -t "$REGISTRY/backend:$CI_COMMIT_SHORT_SHA" -t "$REGISTRY/backend:latest" web/backend
+    - docker push "$REGISTRY/backend:$CI_COMMIT_SHORT_SHA"
+    - docker push "$REGISTRY/backend:latest"
+  only:
+    - main
+    - tags
+
+build-frontend:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - >
+      docker build
+      --build-arg NEXT_PUBLIC_API_URL=https://fragmenstein.snet.biobio.tamu.edu
+      -t "$REGISTRY/frontend:$CI_COMMIT_SHORT_SHA"
+      -t "$REGISTRY/frontend:latest"
+      web/frontend
+    - docker push "$REGISTRY/frontend:$CI_COMMIT_SHORT_SHA"
+    - docker push "$REGISTRY/frontend:latest"
+  only:
+    - main
+    - tags

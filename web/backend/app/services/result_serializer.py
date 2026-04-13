@@ -193,7 +193,16 @@ def save_dataframe(df: pd.DataFrame, path: Path):
                     writer.write(mol)
         writer.close()
     # ↓ drop Mol columns before saving parquet (not serialisable)
-    scalar_df = df.drop(columns=mol_cols, errors="ignore")
+    # Also drop any remaining columns with non-serialisable Python objects
+    obj_cols = []
+    for col in df.columns:
+        if col not in mol_cols and df[col].dtype == object:
+            try:
+                import pyarrow as pa
+                pa.array(df[col], from_pandas=True)
+            except (pa.lib.ArrowInvalid, pa.lib.ArrowTypeError, Exception):
+                obj_cols.append(col)
+    scalar_df = df.drop(columns=mol_cols + obj_cols, errors="ignore")
     # ↓ also drop tuple-keyed columns (PLIP) — parquet can't handle them
     tuple_cols = [c for c in scalar_df.columns if isinstance(c, tuple)]
     if tuple_cols:

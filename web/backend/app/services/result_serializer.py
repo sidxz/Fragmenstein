@@ -43,21 +43,35 @@ TABLE_COLUMNS = [
 
 def _safe_value(v):
     """Convert a value to JSON-safe form."""
-    if v is None:
-        return None
-    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+    import numpy as np
+
+    if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
         return None
     if isinstance(v, Chem.Mol):
         return None  # Mols served via separate endpoint
+    if isinstance(v, (bytes, bytearray)):
+        return None
+    # numpy scalar types → native Python types
+    if isinstance(v, np.integer):
+        return int(v)
+    if isinstance(v, np.floating):
+        return None if np.isnan(v) or np.isinf(v) else float(v)
+    if isinstance(v, np.bool_):
+        return bool(v)
+    if isinstance(v, np.ndarray):
+        return [_safe_value(x) for x in v.tolist()]
+    if isinstance(v, (str, int, bool, float)):
+        return v
     if isinstance(v, (list, tuple)):
         return [_safe_value(x) for x in v]
     if isinstance(v, dict):
         return {str(k): _safe_value(val) for k, val in v.items()}
-    if isinstance(v, (str, int, bool)):
-        return v
-    if isinstance(v, (bytes, bytearray)):
-        return None
-    # Fallback: convert to string for any unrecognised type
+    # Fallback: try numeric conversion, then string
+    try:
+        f = float(v)
+        return None if math.isnan(f) or math.isinf(f) else f
+    except (TypeError, ValueError):
+        pass
     try:
         return str(v)
     except Exception:

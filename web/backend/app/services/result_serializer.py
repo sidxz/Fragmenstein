@@ -49,7 +49,17 @@ def _safe_value(v):
         return None  # Mols served via separate endpoint
     if isinstance(v, (list, tuple)):
         return [_safe_value(x) for x in v]
-    return v
+    if isinstance(v, dict):
+        return {str(k): _safe_value(val) for k, val in v.items()}
+    if isinstance(v, (str, int, bool)):
+        return v
+    if isinstance(v, (bytes, bytearray)):
+        return None
+    # Fallback: convert to string for any unrecognised type
+    try:
+        return str(v)
+    except Exception:
+        return None
 
 
 def dataframe_to_rows(df: pd.DataFrame) -> list[dict]:

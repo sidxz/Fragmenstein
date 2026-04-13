@@ -33,14 +33,13 @@ def run_place(
         from fragmenstein import Wictor
         VictorClass = Wictor
 
-    # Create a per-invocation subclass to avoid mutating shared class attributes
-    class SessionLab(WebLaboratory):
-        Victor = VictorClass
-    SessionLab.Victor.work_path = str(work_dir)
-    SessionLab.Victor.monster_throw_on_discard = True
-    SessionLab.Victor.error_to_catch = Exception
+    # Configure Victor class attributes
+    WebLaboratory.Victor = VictorClass
+    WebLaboratory.Victor.work_path = str(work_dir)
+    WebLaboratory.Victor.monster_throw_on_discard = True
+    WebLaboratory.Victor.error_to_catch = Exception
 
-    lab = SessionLab(pdbblock=pdbblock, covalent_resi=covalent_resi, run_plip=run_plip)
+    lab = WebLaboratory(pdbblock=pdbblock, covalent_resi=covalent_resi, run_plip=run_plip)
     lab._merging_mode = merging_mode
 
     if isinstance(queries, list):

@@ -1,5 +1,6 @@
 """Serialize Fragmenstein DataFrames to JSON-safe dicts."""
 
+import logging
 import math
 import pickle  # ↓ legacy read-only: new files use parquet + sidecar SDF
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 from rdkit import Chem
 
+log = logging.getLogger(__name__)
 
 # Column name mapping: Unicode → ASCII-safe
 COLUMN_MAP = {
@@ -194,14 +196,19 @@ def save_dataframe(df: pd.DataFrame, path: Path):
     sdf_path = path.with_suffix(".mols.sdf")
     if mol_cols:
         writer = Chem.SDWriter(str(sdf_path))
-        for idx, row in df.iterrows():
-            for col in mol_cols:
-                mol = row[col]
-                if mol is not None and isinstance(mol, Chem.Mol):
-                    mol.SetProp("_row_idx", str(idx))
-                    mol.SetProp("_col", col)
-                    writer.write(mol)
-        writer.close()
+        try:
+            for idx, row in df.iterrows():
+                for col in mol_cols:
+                    mol = row[col]
+                    if mol is not None and isinstance(mol, Chem.Mol):
+                        mol.SetProp("_row_idx", str(idx))
+                        mol.SetProp("_col", col)
+                        try:
+                            writer.write(mol)
+                        except Exception:
+                            log.warning("Skipping unwritable mol at row=%s col=%s", idx, col)
+        finally:
+            writer.close()
     # ↓ drop Mol columns before saving parquet (not serialisable)
     # Also drop any remaining columns with non-serialisable Python objects
     obj_cols = []
@@ -210,7 +217,7 @@ def save_dataframe(df: pd.DataFrame, path: Path):
             try:
                 import pyarrow as pa
                 pa.array(df[col], from_pandas=True)
-            except (pa.lib.ArrowInvalid, pa.lib.ArrowTypeError, Exception):
+            except Exception:
                 obj_cols.append(col)
     scalar_df = df.drop(columns=mol_cols + obj_cols, errors="ignore")
     # ↓ also drop tuple-keyed columns (PLIP) — parquet can't handle them

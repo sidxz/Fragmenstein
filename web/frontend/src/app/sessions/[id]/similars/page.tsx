@@ -18,6 +18,7 @@ import { DownloadPanel } from "@/components/results/DownloadPanel";
 import { useSessionStore } from "@/stores/sessionStore";
 import { SmilesImage } from "@/components/viewer/SmilesImage";
 import * as api from "@/services/api";
+import type { CatalogInfo } from "@/services/types";
 
 export default function SimilarsPage() {
   const params = useParams();
@@ -29,10 +30,21 @@ export default function SimilarsPage() {
   const [pcConfig, setPcConfig] = useState({ top_n: 50, threshold: 80, max_per_query: 20, outcome_filter: "acceptable" });
   const [csConfig, setCsConfig] = useState({ top_n: 50, categories: ["CSSS", "CSMS"] as string[], outcome_filter: "acceptable" });
   const [mpConfig, setMpConfig] = useState({ top_n: 50, threshold: 0.8, outcome_filter: "acceptable" });
+  const [catConfig, setCatConfig] = useState<{ name: string | null; top_n: number; outcome_filter: string }>({ name: null, top_n: 200, outcome_filter: "acceptable" });
+  const [catalogs, setCatalogs] = useState<CatalogInfo[]>([]);
+  const [catalogDir, setCatalogDir] = useState<string>("");
+  const [reindexJobId, setReindexJobId] = useState<string | null>(null);
+  const [autoIndexAfterUpload, setAutoIndexAfterUpload] = useState<boolean>(true);
+  const [uploading, setUploading] = useState<boolean>(false);
+  const catalogUploadRef = useRef<FileUpload>(null);
   const [smilesText, setSmilesText] = useState("");
   const [filterTopN, setFilterTopN] = useState(200);
   const [filterOutcome, setFilterOutcome] = useState("acceptable");
   const [useFilter, setUseFilter] = useState(true);
+  const [useMwFilter, setUseMwFilter] = useState(true);
+  const [minMw, setMinMw] = useState<number | null>(200);
+  const [maxMw, setMaxMw] = useState<number | null>(600);
+  const mwParams = () => useMwFilter ? { min_mw: minMw, max_mw: maxMw } : { min_mw: null, max_mw: null };
   const fileUploadRef = useRef<FileUpload>(null);
   const [backends, setBackends] = useState<{ chemspace: boolean; molport: boolean }>({ chemspace: false, molport: false });
 
@@ -56,6 +68,17 @@ export default function SimilarsPage() {
     api.getAvailableBackends().then(setBackends).catch(() => {});
   }, []);
 
+  const refreshCatalogs = useCallback(async () => {
+    try {
+      const res = await api.listCatalogs();
+      setCatalogs(res.catalogs);
+      setCatalogDir(res.catalog_dir);
+      setCatConfig((c) => (c.name && res.catalogs.some((k) => k.name === c.name)) ? c : { ...c, name: res.catalogs[0]?.name ?? null });
+    } catch {}
+  }, []);
+
+  useEffect(() => { refreshCatalogs(); }, [refreshCatalogs]);
+
   useEffect(() => {
     if (similarsJobId && results.length === 0) {
       api.getJobStatus(similarsJobId).then((job) => {
@@ -69,7 +92,7 @@ export default function SimilarsPage() {
     setRunning(true); setResults([]); setStatusMsg(null);
     try {
       const cjid = useSessionStore.getState().combineJobId;
-      const { job_id } = await api.startSimilars(sessionId, { combine_job_id: cjid, ...swConfig });
+      const { job_id } = await api.startSimilars(sessionId, { combine_job_id: cjid, ...swConfig, ...mwParams() });
       setSimilarsJobId(job_id);
     } catch (e: unknown) {
       setStatusMsg(e instanceof Error ? e.message : "Search failed");
@@ -96,8 +119,9 @@ export default function SimilarsPage() {
     setRunning(true); setResults([]); setStatusMsg(null);
     try {
       let res;
+      const mw = mwParams();
       if (useFilter && combineJobId) {
-        res = await api.uploadAndFilterSimilars(sessionId, e.files[0], filterTopN, filterOutcome);
+        res = await api.uploadAndFilterSimilars(sessionId, e.files[0], filterTopN, filterOutcome, mw.min_mw, mw.max_mw);
       } else {
         res = await api.uploadSimilars(sessionId, e.files[0]);
       }
@@ -115,7 +139,7 @@ export default function SimilarsPage() {
     setRunning(true); setResults([]); setStatusMsg(null);
     try {
       const cjid = useSessionStore.getState().combineJobId;
-      const { job_id } = await api.startPubChem(sessionId, { combine_job_id: cjid, ...pcConfig });
+      const { job_id } = await api.startPubChem(sessionId, { combine_job_id: cjid, ...pcConfig, ...mwParams() });
       setSimilarsJobId(job_id);
     } catch (e: unknown) {
       setStatusMsg(e instanceof Error ? e.message : "Search failed");
@@ -127,7 +151,7 @@ export default function SimilarsPage() {
     setRunning(true); setResults([]); setStatusMsg(null);
     try {
       const cjid = useSessionStore.getState().combineJobId;
-      const { job_id } = await api.startChemSpace(sessionId, { combine_job_id: cjid, top_n: csConfig.top_n, categories: csConfig.categories.join(","), outcome_filter: csConfig.outcome_filter });
+      const { job_id } = await api.startChemSpace(sessionId, { combine_job_id: cjid, top_n: csConfig.top_n, categories: csConfig.categories.join(","), outcome_filter: csConfig.outcome_filter, ...mwParams() });
       setSimilarsJobId(job_id);
     } catch (e: unknown) {
       setStatusMsg(e instanceof Error ? e.message : "Search failed");
@@ -139,11 +163,84 @@ export default function SimilarsPage() {
     setRunning(true); setResults([]); setStatusMsg(null);
     try {
       const cjid = useSessionStore.getState().combineJobId;
-      const { job_id } = await api.startMolPort(sessionId, { combine_job_id: cjid, ...mpConfig });
+      const { job_id } = await api.startMolPort(sessionId, { combine_job_id: cjid, ...mpConfig, ...mwParams() });
       setSimilarsJobId(job_id);
     } catch (e: unknown) {
       setStatusMsg(e instanceof Error ? e.message : "Search failed");
       setRunning(false);
+    }
+  };
+
+  const handleCatalog = async () => {
+    if (!catConfig.name) return;
+    setRunning(true); setResults([]); setStatusMsg(null);
+    try {
+      const cjid = useSessionStore.getState().combineJobId;
+      const { job_id } = await api.startCatalogSearch(sessionId, { combine_job_id: cjid, name: catConfig.name, top_n: catConfig.top_n, outcome_filter: catConfig.outcome_filter, ...mwParams() });
+      setSimilarsJobId(job_id);
+    } catch (e: unknown) {
+      setStatusMsg(e instanceof Error ? e.message : "Search failed");
+      setRunning(false);
+    }
+  };
+
+  const handleReindex = async () => {
+    if (!catConfig.name) return;
+    setStatusMsg(null);
+    try {
+      const { job_id } = await api.reindexCatalog(sessionId, catConfig.name);
+      setReindexJobId(job_id);
+    } catch (e: unknown) {
+      setStatusMsg(e instanceof Error ? e.message : "Re-index failed");
+    }
+  };
+
+  const onReindexComplete = useCallback(async () => {
+    setReindexJobId(null);
+    await refreshCatalogs();
+  }, [refreshCatalogs]);
+
+  const handleCatalogUpload = async (e: FileUploadHandlerEvent) => {
+    if (e.files.length === 0) return;
+    const file = e.files[0];
+    const exists = catalogs.some((c) => c.name === file.name);
+    if (exists && !window.confirm(`Catalog "${file.name}" already exists. Overwrite (and discard its index)?`)) {
+      catalogUploadRef.current?.clear();
+      return;
+    }
+    setUploading(true);
+    setStatusMsg(null);
+    try {
+      const res = await api.uploadCatalog(file, exists);
+      catalogUploadRef.current?.clear();
+      await refreshCatalogs();
+      setCatConfig((c) => ({ ...c, name: res.name }));
+      setStatusMsg(`Uploaded ${res.name} (${(res.size_bytes / 1024 / 1024).toFixed(1)} MB)`);
+      if (autoIndexAfterUpload) {
+        try {
+          const { job_id } = await api.reindexCatalog(sessionId, res.name);
+          setReindexJobId(job_id);
+        } catch (err: unknown) {
+          setStatusMsg(err instanceof Error ? err.message : "Auto-index failed");
+        }
+      }
+    } catch (err: unknown) {
+      setStatusMsg(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleDeleteCatalog = async () => {
+    if (!catConfig.name) return;
+    if (!window.confirm(`Delete catalog "${catConfig.name}" and its index files?`)) return;
+    try {
+      await api.deleteCatalog(catConfig.name);
+      setStatusMsg(`Deleted ${catConfig.name}`);
+      setCatConfig((c) => ({ ...c, name: null }));
+      await refreshCatalogs();
+    } catch (err: unknown) {
+      setStatusMsg(err instanceof Error ? err.message : "Delete failed");
     }
   };
 
@@ -164,6 +261,29 @@ export default function SimilarsPage() {
       {/* Input modes */}
       {!running && results.length === 0 && (
         <div className="panel p-5 mb-6">
+          {/* Shared MW filter — applies to all DB searches and library filter */}
+          <div className="mb-5 p-3 rounded-lg bg-slate-50 border border-slate-200">
+            <label className="flex items-center gap-2 cursor-pointer mb-2">
+              <Checkbox checked={useMwFilter} onChange={(e) => setUseMwFilter(e.checked ?? false)} />
+              <span className="text-xs font-semibold text-slate-600">Filter analogs by molecular weight</span>
+            </label>
+            <p className="text-[10px] text-slate-400 mb-2">
+              Drops small fragments and overly large compounds returned by the similarity search. MW is computed from SMILES via RDKit when the source does not provide it. Leave a bound empty for no limit on that side.
+            </p>
+            {useMwFilter && (
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Min MW (Da)</label>
+                  <InputNumber value={minMw} onValueChange={(e) => setMinMw(e.value ?? null)} min={0} max={2000} maxFractionDigits={1} showButtons={false} placeholder="No min" />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Max MW (Da)</label>
+                  <InputNumber value={maxMw} onValueChange={(e) => setMaxMw(e.value ?? null)} min={0} max={2000} maxFractionDigits={1} showButtons={false} placeholder="No max" />
+                </div>
+              </div>
+            )}
+          </div>
+
           <TabView activeIndex={inputTab} onTabChange={(e) => setInputTab(e.index)}>
             {/* SmallWorld */}
             <TabPanel header="SmallWorld">
@@ -265,6 +385,137 @@ export default function SimilarsPage() {
                   emptyTemplate={<p className="text-sm p-4 text-slate-400">Drag and drop a CSV, TSV, or Excel file here (up to 200 MB).</p>}
                 />
               </div>
+            </TabPanel>
+
+            {/* Catalog (server-side, pre-indexed) */}
+            <TabPanel header="Catalog">
+              {!combineJobId ? (
+                <div className="text-center py-6">
+                  <p className="text-sm text-slate-400 mb-3">Complete the Combine step first to rank a catalog against your mergers.</p>
+                  <Button label="Go to Combine" icon="pi pi-arrow-left" size="small" onClick={() => router.push(`/sessions/${sessionId}/combine`)} />
+                </div>
+              ) : (
+                <div className="mt-4">
+                  <p className="text-xs text-slate-400 mb-3">
+                    Tanimoto-rank a pre-indexed compound library (e.g. ChemBridge EXPRESS-Pick, DIVERSet, Hit2Lead) against your mergers.
+                    Upload SDF/SDF.gz/CSV/TSV/XLSX catalogs once, index them, then re-use across sessions.
+                    Server location: <span className="font-mono text-slate-500">{catalogDir || "(loading)"}</span>.
+                  </p>
+
+                  {/* Upload widget */}
+                  <div className="mb-4 p-3 rounded-lg bg-slate-50 border border-slate-200">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-slate-600">Upload a new catalog</span>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <Checkbox checked={autoIndexAfterUpload} onChange={(e) => setAutoIndexAfterUpload(e.checked ?? false)} />
+                        <span className="text-xs text-slate-600">Index after upload</span>
+                      </label>
+                    </div>
+                    <FileUpload
+                      ref={catalogUploadRef}
+                      mode="advanced"
+                      accept=".sdf,.gz,.csv,.tsv,.xlsx"
+                      maxFileSize={5 * 1024 * 1024 * 1024}
+                      customUpload
+                      uploadHandler={handleCatalogUpload}
+                      auto={false}
+                      disabled={uploading || !!reindexJobId}
+                      chooseLabel="Select catalog"
+                      uploadLabel={uploading ? "Uploading…" : "Upload"}
+                      chooseOptions={{ className: "p-button-sm" }}
+                      uploadOptions={{ className: "p-button-sm" }}
+                      cancelOptions={{ className: "p-button-sm" }}
+                      emptyTemplate={<p className="text-xs p-3 text-slate-400">Drag a SDF, SDF.gz, CSV, TSV, or XLSX file here (up to 5 GB).</p>}
+                    />
+                  </div>
+
+                  {catalogs.length === 0 ? (
+                    <div className="flex items-center gap-2 p-3 rounded-md bg-amber-50 border border-amber-200">
+                      <i className="pi pi-info-circle text-amber-600" />
+                      <span className="text-xs text-amber-800">No catalogs yet. Upload one above to get started.</span>
+                      <Button label="Refresh" icon="pi pi-refresh" size="small" severity="secondary" onClick={refreshCatalogs} className="ml-auto" />
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Catalog</label>
+                          <Dropdown
+                            value={catConfig.name}
+                            options={catalogs.map((c) => ({
+                              label: `${c.name} ${c.indexed ? `· ${c.compound_count?.toLocaleString() ?? "?"} cmpds` : "· not indexed"}`,
+                              value: c.name,
+                            }))}
+                            onChange={(e) => setCatConfig((c) => ({ ...c, name: e.value }))}
+                            placeholder="Select a catalog"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Top N to Keep</label>
+                          <InputNumber value={catConfig.top_n} onValueChange={(e) => setCatConfig((c) => ({ ...c, top_n: e.value ?? 200 }))} min={1} max={10000} />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Merger Outcome Filter</label>
+                          <Dropdown value={catConfig.outcome_filter} options={["acceptable", "deviant", "equally sized", ""].map(v => ({ label: v || "All", value: v }))} onChange={(e) => setCatConfig(c => ({ ...c, outcome_filter: e.value }))} />
+                        </div>
+                      </div>
+
+                      {/* Selected catalog metadata */}
+                      {catConfig.name && (() => {
+                        const sel = catalogs.find((c) => c.name === catConfig.name);
+                        if (!sel) return null;
+                        return (
+                          <div className="mt-4 grid grid-cols-4 gap-2">
+                            <div className="stat-card"><div className="stat-label">Format</div><div className="stat-value text-sm uppercase">{sel.format}</div></div>
+                            <div className="stat-card"><div className="stat-label">Size</div><div className="stat-value text-sm">{(sel.size_bytes / 1024 / 1024).toFixed(1)} MB</div></div>
+                            <div className="stat-card"><div className="stat-label">Compounds</div><div className="stat-value text-sm">{sel.indexed ? sel.compound_count?.toLocaleString() : "—"}</div></div>
+                            <div className="stat-card">
+                              <div className="stat-label">Indexed</div>
+                              <div className={`stat-value text-sm ${sel.indexed ? "text-emerald-700" : "text-amber-700"}`}>{sel.indexed ? "Yes" : "No"}</div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      <div className="mt-4 flex items-center gap-2">
+                        <Button
+                          label="Run Search"
+                          icon="pi pi-search"
+                          size="small"
+                          onClick={handleCatalog}
+                          disabled={!catConfig.name || !!reindexJobId || !catalogs.find((c) => c.name === catConfig.name)?.indexed}
+                        />
+                        <Button
+                          label={catalogs.find((c) => c.name === catConfig.name)?.indexed ? "Re-index" : "Index"}
+                          icon="pi pi-database"
+                          severity="secondary"
+                          size="small"
+                          onClick={handleReindex}
+                          disabled={!catConfig.name || !!reindexJobId}
+                        />
+                        <Button label="Refresh list" icon="pi pi-refresh" severity="secondary" size="small" outlined onClick={refreshCatalogs} />
+                        <Button
+                          label="Delete"
+                          icon="pi pi-trash"
+                          severity="danger"
+                          size="small"
+                          outlined
+                          onClick={handleDeleteCatalog}
+                          disabled={!catConfig.name || !!reindexJobId}
+                          className="ml-auto"
+                        />
+                      </div>
+
+                      {reindexJobId && (
+                        <div className="mt-4">
+                          <p className="text-xs text-slate-500 mb-2">Indexing {catConfig.name}… progress streams below. You can navigate away.</p>
+                          <JobProgress jobId={reindexJobId} onComplete={onReindexComplete} onCancel={() => setReindexJobId(null)} onRerun={() => setReindexJobId(null)} />
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             </TabPanel>
 
             {/* PubChem */}

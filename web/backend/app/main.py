@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .database import init_db
 from .routers import (
+    catalogs,
     combine,
     demo,
     jobs,
@@ -61,6 +62,7 @@ app.include_router(monster.router)
 app.include_router(single_victor.router)
 app.include_router(jobs.router)
 app.include_router(molecules.router)
+app.include_router(catalogs.router)
 
 
 @app.get("/api/health")

@@ -63,6 +63,8 @@ export interface SimilarsRequest {
   length?: number;
   db?: string;
   outcome_filter?: string;
+  min_mw?: number | null;
+  max_mw?: number | null;
 }
 
 export interface ChemSpaceRequest {
@@ -70,6 +72,8 @@ export interface ChemSpaceRequest {
   top_n?: number;
   categories?: string;
   outcome_filter?: string;
+  min_mw?: number | null;
+  max_mw?: number | null;
 }
 
 export interface MolPortRequest {
@@ -77,6 +81,32 @@ export interface MolPortRequest {
   top_n?: number;
   threshold?: number;
   outcome_filter?: string;
+  min_mw?: number | null;
+  max_mw?: number | null;
+}
+
+export interface CatalogSearchRequest {
+  combine_job_id?: string | null;
+  name: string;
+  top_n?: number;
+  outcome_filter?: string;
+  min_mw?: number | null;
+  max_mw?: number | null;
+}
+
+export interface CatalogInfo {
+  name: string;
+  source_path: string;
+  format: string;
+  size_bytes: number;
+  compound_count: number | null;
+  indexed: boolean;
+  indexed_at: string | null;
+}
+
+export interface CatalogsResponse {
+  catalog_dir: string;
+  catalogs: CatalogInfo[];
 }
 
 export interface AvailableBackends {

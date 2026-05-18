@@ -12,6 +12,70 @@ from .result_serializer import load_dataframe, save_dataframe
 log = logging.getLogger(__name__)
 
 
+_MW_COLUMN_CANDIDATES = ("molecular_weight", "MolecularWeight", "mw", "MW", "MolWt")
+
+
+def _apply_mw_filter(
+    df: pd.DataFrame,
+    min_mw: float | None,
+    max_mw: float | None,
+) -> pd.DataFrame:
+    """Filter a similars DataFrame by molecular weight.
+
+    Reuses an existing MW column if present (any of `_MW_COLUMN_CANDIDATES`),
+    otherwise computes MW from the `smiles` column via RDKit. Always populates
+    a canonical `molecular_weight` column on the returned frame for display.
+    Rows with unparseable SMILES are dropped when the filter is active.
+    """
+    if df.empty:
+        return df
+    if min_mw is None and max_mw is None:
+        return df
+
+    from rdkit import Chem
+    from rdkit.Chem import Descriptors
+
+    existing_col = next((c for c in _MW_COLUMN_CANDIDATES if c in df.columns), None)
+    if existing_col and existing_col != "molecular_weight":
+        df = df.rename(columns={existing_col: "molecular_weight"})
+        existing_col = "molecular_weight"
+
+    smiles_col = next((c for c in ("smiles", "SMILES", "Smiles", "canonical_smiles") if c in df.columns), None)
+    if smiles_col is None:
+        log.warning("MW filter requested but no SMILES column found — skipping filter")
+        return df
+
+    def _resolve_mw(row) -> float | None:
+        if existing_col:
+            v = row.get(existing_col)
+            try:
+                if v is not None and pd.notna(v):
+                    return float(v)
+            except (TypeError, ValueError):
+                pass
+        smi = row.get(smiles_col)
+        if not isinstance(smi, str) or not smi.strip():
+            return None
+        mol = Chem.MolFromSmiles(smi)
+        if mol is None:
+            return None
+        return float(Descriptors.MolWt(mol))
+
+    mw_values = df.apply(_resolve_mw, axis=1)
+    df = df.copy()
+    df["molecular_weight"] = mw_values
+
+    before = len(df)
+    mask = df["molecular_weight"].notna()
+    if min_mw is not None:
+        mask &= df["molecular_weight"] >= float(min_mw)
+    if max_mw is not None:
+        mask &= df["molecular_weight"] <= float(max_mw)
+    df = df[mask].reset_index(drop=True)
+    log.info(f"MW filter [{min_mw}, {max_mw}]: {before} → {len(df)} rows")
+    return df
+
+
 
 def run_similars_search(
     session_id: str,
@@ -21,6 +85,8 @@ def run_similars_search(
     length: int = 200,
     db: str = "REAL_dataset",
     outcome_filter: str = "acceptable",
+    min_mw: float | None = None,
+    max_mw: float | None = None,
 ) -> Path:
     """Search SmallWorld for purchasable analogs of combine results."""
     # Load combine results
@@ -65,6 +131,8 @@ def run_similars_search(
             results["hits"] = results["hitSmiles"].map(
                 lambda s: hit_mols_map.get(s, [])
             )
+
+    results = _apply_mw_filter(results, min_mw, max_mw)
 
     # Save results
     result_path = file_manager.results_dir(session_id, "similars") / "results.pkl"
@@ -170,6 +238,8 @@ def filter_library_against_mergers(
     combine_result_path: str,
     top_n: int = 200,
     outcome_filter: str = "acceptable",
+    min_mw: float | None = None,
+    max_mw: float | None = None,
 ) -> tuple[Path, int, int, int]:
     """Filter a large compound library by Tanimoto similarity to combine mergers.
 
@@ -239,6 +309,8 @@ def filter_library_against_mergers(
     if smiles_key != "smiles":
         filtered = filtered.rename(columns={smiles_key: "smiles"})
 
+    filtered = _apply_mw_filter(filtered, min_mw, max_mw)
+
     result_path = file_manager.results_dir(session_id, "similars") / "results.pkl"
     save_dataframe(filtered, result_path)
 
@@ -253,6 +325,8 @@ def run_pubchem_search(
     threshold: int = 80,
     max_per_query: int = 20,
     outcome_filter: str = "acceptable",
+    min_mw: float | None = None,
+    max_mw: float | None = None,
 ) -> Path:
     """Search PubChem for similar compounds using fingerprint similarity."""
     import time
@@ -331,6 +405,7 @@ def run_pubchem_search(
         time.sleep(0.25)
 
     results = pd.DataFrame(all_results) if all_results else pd.DataFrame()
+    results = _apply_mw_filter(results, min_mw, max_mw)
     result_path = file_manager.results_dir(session_id, "similars") / "results.pkl"
     save_dataframe(results, result_path)
 
@@ -377,6 +452,8 @@ def run_chemspace_search(
     top_n: int = 50,
     categories: str = "CSSS,CSMS",
     outcome_filter: str = "acceptable",
+    min_mw: float | None = None,
+    max_mw: float | None = None,
 ) -> Path:
     """Search ChemSpace for purchasable similar compounds."""
     from .chemspace_client import ChemSpaceClient
@@ -417,11 +494,68 @@ def run_chemspace_search(
         log.info(f"  → {len(hits)} hits ({len(all_results)} total unique)")
 
     results = pd.DataFrame(all_results) if all_results else pd.DataFrame()
+    results = _apply_mw_filter(results, min_mw, max_mw)
     result_path = file_manager.results_dir(session_id, "similars") / f"results_{job_id}.pkl"
     save_dataframe(results, result_path)
 
     log.info(f"ChemSpace search completed: {len(results)} unique analogs found")
     return result_path
+
+
+def run_catalog_search(
+    session_id: str,
+    job_id: str,
+    catalog_name: str,
+    combine_result_path: str,
+    top_n: int = 200,
+    outcome_filter: str = "acceptable",
+    min_mw: float | None = None,
+    max_mw: float | None = None,
+) -> tuple[Path, int, int, int]:
+    """Rank a pre-indexed catalog by Tanimoto similarity to the combine-step mergers.
+
+    Uses cached Morgan fingerprints + a vectorized numpy Tanimoto, so it's ~30×
+    faster than parsing the library SMILES on every run.
+
+    Returns (result_path, library_size, kept_count, merger_count).
+    """
+    import numpy as np
+    from . import catalog_registry
+
+    library_df, library_fps = catalog_registry.load_catalog(catalog_name)
+    library_size = len(library_df)
+
+    combine_df = load_dataframe(Path(combine_result_path))
+    if outcome_filter:
+        combine_df = combine_df[combine_df["outcome"] == outcome_filter]
+    if combine_df.empty:
+        raise ValueError("No mergers passed the outcome filter")
+
+    smiles_col = "simple_smiles" if "simple_smiles" in combine_df.columns else "smiles"
+    merger_smiles = combine_df[smiles_col].dropna().tolist()
+
+    merger_fps: list[np.ndarray] = []
+    for smi in merger_smiles:
+        fp = catalog_registry.smiles_to_packed_fp(smi)
+        if fp is not None:
+            merger_fps.append(fp)
+    if not merger_fps:
+        raise ValueError("No valid merger fingerprints could be built")
+
+    merger_arr = np.stack(merger_fps, axis=0).astype(np.uint8)
+    log.info(f"Catalog '{catalog_name}': {library_size} library × {len(merger_fps)} mergers")
+
+    scores = catalog_registry.max_tanimoto_to_queries(library_fps, merger_arr)
+    library_df = library_df.copy()
+    library_df["tanimoto_to_merger"] = scores
+
+    ranked = library_df.sort_values("tanimoto_to_merger", ascending=False).head(top_n)
+    ranked = _apply_mw_filter(ranked, min_mw, max_mw)
+
+    result_path = file_manager.results_dir(session_id, "similars") / f"results_{job_id}.pkl"
+    save_dataframe(ranked, result_path)
+    log.info(f"Catalog search: {library_size} → {len(ranked)} compounds")
+    return result_path, library_size, len(ranked), len(merger_fps)
 
 
 def run_molport_search(
@@ -431,6 +565,8 @@ def run_molport_search(
     top_n: int = 50,
     threshold: float = 0.8,
     outcome_filter: str = "acceptable",
+    min_mw: float | None = None,
+    max_mw: float | None = None,
 ) -> Path:
     """Search MolPort for purchasable similar compounds."""
     from .molport_client import MolPortClient
@@ -469,6 +605,7 @@ def run_molport_search(
         log.info(f"  → {len(hits)} hits ({len(all_results)} total unique)")
 
     results = pd.DataFrame(all_results) if all_results else pd.DataFrame()
+    results = _apply_mw_filter(results, min_mw, max_mw)
     result_path = file_manager.results_dir(session_id, "similars") / f"results_{job_id}.pkl"
     save_dataframe(results, result_path)
 

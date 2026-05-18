@@ -3,6 +3,8 @@
 import { API_BASE_URL } from "@/lib/constants";
 import type {
   AvailableBackends,
+  CatalogSearchRequest,
+  CatalogsResponse,
   ChemSpaceRequest,
   CombineRequest,
   HitsResponse,
@@ -171,10 +173,14 @@ export async function uploadAndFilterSimilars(
   file: File,
   topN: number = 200,
   outcomeFilter: string = "acceptable",
+  minMw: number | null = null,
+  maxMw: number | null = null,
 ): Promise<{ job_id: string; library_size: number; filtered: number; mergers_used: number; invalid: number; message: string }> {
   const formData = new FormData();
   formData.append("file", file);
   const params = new URLSearchParams({ top_n: String(topN), outcome_filter: outcomeFilter });
+  if (minMw != null) params.set("min_mw", String(minMw));
+  if (maxMw != null) params.set("max_mw", String(maxMw));
   const res = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/similars/upload-filter?${params}`, {
     method: "POST",
     body: formData,
@@ -187,7 +193,7 @@ export async function uploadAndFilterSimilars(
 }
 
 // Similars — PubChem
-export async function startPubChem(sessionId: string, config: { combine_job_id?: string | null; top_n?: number; threshold?: number; max_per_query?: number; outcome_filter?: string }): Promise<{ job_id: string }> {
+export async function startPubChem(sessionId: string, config: { combine_job_id?: string | null; top_n?: number; threshold?: number; max_per_query?: number; outcome_filter?: string; min_mw?: number | null; max_mw?: number | null }): Promise<{ job_id: string }> {
   const { combine_job_id, ...rest } = config;
   const body = combine_job_id ? { combine_job_id, ...rest } : rest;
   return request(`/api/sessions/${sessionId}/similars/pubchem`, {
@@ -211,6 +217,51 @@ export async function startMolPort(sessionId: string, config: MolPortRequest): P
   const { combine_job_id, ...rest } = config;
   const body = combine_job_id ? { combine_job_id, ...rest } : rest;
   return request(`/api/sessions/${sessionId}/similars/molport`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+// Catalogs — list / upload / delete / re-index / search
+export async function listCatalogs(): Promise<CatalogsResponse> {
+  return request("/api/catalogs");
+}
+
+export async function uploadCatalog(file: File, overwrite: boolean = false): Promise<{ name: string; size_bytes: number; indexed: boolean }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`${API_BASE_URL}/api/catalogs/upload?overwrite=${overwrite ? "true" : "false"}`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(body || `Upload failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function deleteCatalog(name: string): Promise<{ name: string; removed: string[] }> {
+  const res = await fetch(`${API_BASE_URL}/api/catalogs/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(body || `Delete failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function reindexCatalog(sessionId: string, name: string): Promise<{ job_id: string }> {
+  return request(`/api/sessions/${sessionId}/catalogs/${encodeURIComponent(name)}/reindex`, {
+    method: "POST",
+  });
+}
+
+export async function startCatalogSearch(sessionId: string, config: CatalogSearchRequest): Promise<{ job_id: string }> {
+  const { combine_job_id, ...rest } = config;
+  const body = combine_job_id ? { combine_job_id, ...rest } : rest;
+  return request(`/api/sessions/${sessionId}/similars/catalog`, {
     method: "POST",
     body: JSON.stringify(body),
   });

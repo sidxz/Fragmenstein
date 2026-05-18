@@ -14,6 +14,7 @@ from ..services.similars_service import (
     filter_library_against_mergers,
     parse_manual_smiles,
     parse_uploaded_file,
+    run_catalog_search,
     run_chemspace_search,
     run_molport_search,
     run_pubchem_search,
@@ -34,6 +35,8 @@ class SimilarsRequest(BaseModel):
     length: int = 200
     db: str = "REAL_dataset"
     outcome_filter: str = "acceptable"
+    min_mw: float | None = None
+    max_mw: float | None = None
 
 
 async def _run_similars_task(job_id: str, session_id: str, config: SimilarsRequest):
@@ -59,6 +62,8 @@ async def _run_similars_task(job_id: str, session_id: str, config: SimilarsReque
             length=config.length,
             db=config.db,
             outcome_filter=config.outcome_filter,
+            min_mw=config.min_mw,
+            max_mw=config.max_mw,
         )
         job_manager.mark_completed(job_id, result_path=str(result_path))
     except Exception as e:
@@ -141,6 +146,8 @@ async def upload_and_filter(
     file: UploadFile,
     top_n: int = 200,
     outcome_filter: str = "acceptable",
+    min_mw: float | None = None,
+    max_mw: float | None = None,
 ):
     """Upload a large compound library and filter by Tanimoto similarity to mergers.
 
@@ -180,6 +187,8 @@ async def upload_and_filter(
             combine_result_path=combine_jobs[0].result_path,
             top_n=top_n,
             outcome_filter=outcome_filter,
+            min_mw=min_mw,
+            max_mw=max_mw,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -211,6 +220,8 @@ class PubChemRequest(BaseModel):
     threshold: int = 80
     max_per_query: int = 20
     outcome_filter: str = "acceptable"
+    min_mw: float | None = None
+    max_mw: float | None = None
 
 
 async def _run_pubchem_task(job_id: str, session_id: str, config: PubChemRequest):
@@ -235,6 +246,8 @@ async def _run_pubchem_task(job_id: str, session_id: str, config: PubChemRequest
             threshold=config.threshold,
             max_per_query=config.max_per_query,
             outcome_filter=config.outcome_filter,
+            min_mw=config.min_mw,
+            max_mw=config.max_mw,
         )
         job_manager.mark_completed(job_id, result_path=str(result_path))
     except Exception as e:
@@ -259,6 +272,8 @@ class ChemSpaceRequest(BaseModel):
     top_n: int = 50
     categories: str = "CSSS,CSMS"
     outcome_filter: str = "acceptable"
+    min_mw: float | None = None
+    max_mw: float | None = None
 
 
 async def _run_chemspace_task(job_id: str, session_id: str, config: ChemSpaceRequest):
@@ -282,6 +297,8 @@ async def _run_chemspace_task(job_id: str, session_id: str, config: ChemSpaceReq
             top_n=config.top_n,
             categories=config.categories,
             outcome_filter=config.outcome_filter,
+            min_mw=config.min_mw,
+            max_mw=config.max_mw,
         )
         job_manager.mark_completed(job_id, result_path=str(result_path))
     except Exception as e:
@@ -306,6 +323,8 @@ class MolPortRequest(BaseModel):
     top_n: int = 50
     threshold: float = 0.8
     outcome_filter: str = "acceptable"
+    min_mw: float | None = None
+    max_mw: float | None = None
 
 
 async def _run_molport_task(job_id: str, session_id: str, config: MolPortRequest):
@@ -329,6 +348,8 @@ async def _run_molport_task(job_id: str, session_id: str, config: MolPortRequest
             top_n=config.top_n,
             threshold=config.threshold,
             outcome_filter=config.outcome_filter,
+            min_mw=config.min_mw,
+            max_mw=config.max_mw,
         )
         job_manager.mark_completed(job_id, result_path=str(result_path))
     except Exception as e:
@@ -343,4 +364,55 @@ async def start_molport(session_id: str, config: MolPortRequest):
         raise HTTPException(status_code=404, detail="Session not found")
     job = job_manager.start_job(session_id, "similars", config.model_dump())
     asyncio.create_task(_run_molport_task(job.id, session_id, config))
+    return {"job_id": job.id}
+
+
+# ── Registered catalog (server-side, pre-indexed) ───────────────────────────
+
+class CatalogRequest(BaseModel):
+    combine_job_id: str | None = None
+    name: str  # catalog filename in the configured catalog dir
+    top_n: int = 200
+    outcome_filter: str = "acceptable"
+    min_mw: float | None = None
+    max_mw: float | None = None
+
+
+async def _run_catalog_task(job_id: str, session_id: str, config: CatalogRequest):
+    job_manager.mark_running(job_id)
+    try:
+        cjid = config.combine_job_id
+        if not cjid:
+            combine_jobs = [j for j in get_jobs_for_session(session_id)
+                            if j.type == "combine" and j.status == "completed" and j.result_path]
+            if not combine_jobs:
+                raise ValueError("No completed combine job found for this session")
+            cjid = combine_jobs[0].id
+        combine_job = get_job(cjid)
+        if combine_job is None or combine_job.result_path is None:
+            raise ValueError("Combine job not found or not completed")
+        result_path, _lib_size, _kept, _mergers = await asyncio.to_thread(
+            run_catalog_search,
+            session_id=session_id,
+            job_id=job_id,
+            catalog_name=config.name,
+            combine_result_path=combine_job.result_path,
+            top_n=config.top_n,
+            outcome_filter=config.outcome_filter,
+            min_mw=config.min_mw,
+            max_mw=config.max_mw,
+        )
+        job_manager.mark_completed(job_id, result_path=str(result_path))
+    except Exception as e:
+        log.exception(f"Catalog search failed for session {session_id}")
+        job_manager.mark_failed(job_id, error=f"{type(e).__name__}: {e}")
+
+
+@router.post("/similars/catalog")
+async def start_catalog(session_id: str, config: CatalogRequest):
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    job = job_manager.start_job(session_id, "similars", config.model_dump())
+    asyncio.create_task(_run_catalog_task(job.id, session_id, config))
     return {"job_id": job.id}

@@ -14,7 +14,9 @@ if [ "$INSTALL_PYROSETTA" = "true" ]; then
         export PYTHONPATH="$CACHE_DIR:$PYTHONPATH"
     else
         echo "Installing PyRosetta via pyrosetta-installer..."
-        python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()"
+        # mirror=1 is graylab.jhu.edu (east); mirror=0 (west.rosettacommons.org) currently
+        # returns 404 for the wheel its own latest.html points at.
+        python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta(mirror=1)"
         echo "PyRosetta installed successfully."
     fi
 fi
